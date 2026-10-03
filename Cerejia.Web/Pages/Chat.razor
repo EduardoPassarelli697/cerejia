@@ -1,0 +1,290 @@
+@page "/"
+@using Cerejia.Web.Services
+@using Cerejia.Web.Models
+@inject ApiService Api
+@inject AuthStateService Auth
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+<div class="app-layout">
+
+    <div class="sidebar">
+        <div class="sidebar-logo">
+            <div class="logo-icon">C</div>
+            <div class="logo-texto">CEREJ<span>.IA</span></div>
+        </div>
+
+        @if (Auth.EmpresaNome != null)
+        {
+            <div class="sidebar-empresa">
+                <strong>@Auth.EmpresaNome</strong>
+                Assistente corporativo
+            </div>
+        }
+
+        <button class="btn-nova-conversa" @onclick="NovaConversa">
+            ✦ Nova conversa
+        </button>
+
+        <div class="sidebar-historico">
+            @if (historico.Any())
+            {
+                <div class="historico-titulo">Conversas recentes</div>
+                @foreach (var conv in historico)
+                {
+                    <div class="historico-item @(conversaAtualId == conv.Id ? "ativo" : "")"
+                         @onclick="() => CarregarConversa(conv.Id)"
+                         title="@conv.Titulo">
+                        @(conv.Titulo ?? "Conversa sem título")
+                    </div>
+                }
+            }
+        </div>
+
+        <div class="sidebar-footer">
+            <button class="btn-sidebar-footer" @onclick="IrParaDocumentos">
+                📄 Gerenciar documentos
+            </button>
+            <button class="btn-sidebar-footer" @onclick="IrParaColaboradores">
+                👥 Administrar colaboradores
+            </button>
+            <button class="btn-sidebar-footer" @onclick="Sair">
+                ↩ Sair
+            </button>
+        </div>
+    </div>
+
+    <div class="chat-area">
+        <div class="chat-header">
+            <span>@(conversaAtualId == null ? "Nova conversa" : "Conversa ativa")</span>
+            <span style="font-size:12px">Phi-3 · RAG · Documentos indexados</span>
+        </div>
+
+        <div class="chat-mensagens" id="mensagensContainer">
+            @if (!mensagens.Any() && conversaAtualId == null)
+            {
+
+                <div class="chat-welcome">
+                    <div class="welcome-icon">🤖</div>
+                    <div class="welcome-titulo">Olá, @(!string.IsNullOrWhiteSpace(Auth.NomeUsuario) ? Auth.NomeUsuario : "colaborador")! Sou o CEREJ.IA</div>
+                    <div class="welcome-subtitulo">
+                        Estou pronto para responder suas dúvidas com base nos
+                        documentos internos da sua empresa. O que você gostaria de saber?
+                    </div>
+                    <div class="welcome-sugestoes">
+                        <button class="sugestao-btn" @onclick='() => EnviarSugestao("Quais são as políticas de férias da empresa?")'>
+                            🏖 Quais são as políticas de férias?
+                        </button>
+                        <button class="sugestao-btn" @onclick='() => EnviarSugestao("Como funciona o processo de reembolso de despesas?")'>
+                            💳 Como funciona o reembolso de despesas?
+                        </button>
+                        <button class="sugestao-btn" @onclick='() => EnviarSugestao("Quais são os procedimentos de segurança do trabalho?")'>
+                            🦺 Procedimentos de segurança do trabalho
+                        </button>
+                        <button class="sugestao-btn" @onclick='() => EnviarSugestao("Como solicitar equipamentos ou materiais de trabalho?")'>
+                            🖥 Como solicitar equipamentos?
+                        </button>
+                    </div>
+                </div>
+            }
+            else
+            {
+                @foreach (var msg in mensagens)
+                {
+                    <div class="mensagem @msg.Papel">
+                        <div class="mensagem-avatar">
+                            @(msg.Papel == "usuario" ? "U" : "🤖")
+                        </div>
+                        <div class="mensagem-conteudo">
+                            @((MarkupString)RenderMarkdown(msg.Conteudo))
+
+                            @if (msg.Fontes?.Any() == true)
+                            {
+                                <div class="fontes">
+                                    <div class="fontes-titulo">Fontes consultadas</div>
+                                    @foreach (var fonte in msg.Fontes)
+                                    {
+                                        <div class="fonte-item">
+                                            <span>📎</span>
+                                            <span class="fonte-nome">@fonte.NomeArquivo</span>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </div>
+                    </div>
+                }
+
+                @if (enviando)
+                {
+                    <div class="mensagem assistente">
+                        <div class="mensagem-avatar">🤖</div>
+                        <div class="mensagem-conteudo">
+                            <div class="digitando">
+                                <span></span><span></span><span></span>
+                            </div>
+                        </div>
+                    </div>
+                }
+            }
+        </div>
+
+        <div class="chat-input-area">
+            <div class="chat-input-wrapper">
+                <textarea
+                    class="chat-input"
+                    placeholder="Faça uma pergunta sobre a empresa..."
+                    @bind="textoMensagem"
+                    @bind:event="oninput"
+                    @onkeydown="TratarTecla"
+                    rows="1"
+                    id="inputMensagem"
+                    disabled="@enviando">
+                </textarea>
+                <button class="btn-enviar"
+                        @onclick="Enviar"
+                        disabled="@(enviando || string.IsNullOrWhiteSpace(textoMensagem))">
+                    ➤
+                </button>
+            </div>
+            <div class="input-hint">Enter para enviar · Shift+Enter para nova linha</div>
+        </div>
+    </div>
+</div>
+
+@code {
+    private List<MensagemVm> mensagens = [];
+    private List<ConversaResumo> historico = [];
+    private string textoMensagem = "";
+    private bool enviando = false;
+    private Guid? conversaAtualId = null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!Auth.EstaAutenticado)
+        {
+            Nav.NavigateTo("/login");
+            return;
+        }
+        await CarregarHistorico();
+    }
+
+    private async Task CarregarHistorico()
+    {
+        historico = await Api.ObterHistoricoAsync() ?? [];
+    }
+
+    private async Task CarregarConversa(Guid id)
+    {
+        conversaAtualId = id;
+        var conv = await Api.ObterConversaAsync(id);
+        if (conv == null) return;
+
+        mensagens = conv.Mensagens.Select(m => new MensagemVm
+        {
+            Papel = m.Papel,
+            Conteudo = m.Conteudo
+        }).ToList();
+
+        await ScrollParaBaixo();
+    }
+
+    private void NovaConversa()
+    {
+        conversaAtualId = null;
+        mensagens = [];
+        textoMensagem = "";
+    }
+
+    private async Task Enviar()
+    {
+        var texto = textoMensagem.Trim();
+        if (string.IsNullOrEmpty(texto) || enviando) return;
+
+        textoMensagem = "";
+        enviando = true;
+
+        mensagens.Add(new MensagemVm { Papel = "usuario", Conteudo = texto });
+        await ScrollParaBaixo();
+
+        try
+        {
+            var (resposta, erro) = await Api.EnviarMensagemAsync(texto, conversaAtualId);
+            if (resposta != null)
+            {
+                conversaAtualId = resposta.ConversaId;
+                mensagens.Add(new MensagemVm
+                {
+                    Papel = "assistente",
+                    Conteudo = resposta.Resposta,
+                    Fontes = resposta.Fontes
+                });
+                await CarregarHistorico();
+            }
+            else
+            {
+                mensagens.Add(new MensagemVm
+                {
+                    Papel = "assistente",
+                    Conteudo = $"⚠ {erro ?? "Não foi possível obter uma resposta."}"
+                });
+            }
+        }
+        catch (Exception ex)
+        {
+            mensagens.Add(new MensagemVm
+            {
+                Papel = "assistente",
+                Conteudo = $"⚠ Erro inesperado: {ex.Message}"
+            });
+        }
+        finally
+        {
+            enviando = false;
+            await ScrollParaBaixo();
+        }
+    }
+
+    private async Task EnviarSugestao(string sugestao)
+    {
+        textoMensagem = sugestao;
+        await Enviar();
+    }
+
+    private async Task TratarTecla(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter" && !e.ShiftKey)
+            await Enviar();
+    }
+
+    private async Task ScrollParaBaixo()
+    {
+        await Task.Delay(50);
+        await JS.InvokeVoidAsync("scrollParaBaixo", "mensagensContainer");
+    }
+
+    private void IrParaDocumentos() => Nav.NavigateTo("/documentos");
+    private void IrParaColaboradores() => Nav.NavigateTo("/colaboradores");
+
+    private async Task Sair()
+    {
+        await Api.SairAsync();
+        Nav.NavigateTo("/login");
+    }
+
+    private static string RenderMarkdown(string texto)
+    {
+        if (string.IsNullOrEmpty(texto)) return "";
+        var html = System.Text.RegularExpressions.Regex.Replace(texto, @"\*\*(.*?)\*\*", "<strong>$1</strong>");
+        html = System.Text.RegularExpressions.Regex.Replace(html, @"\*(.*?)\*", "<em>$1</em>");
+        html = html.Replace("\n", "<br/>");
+        return $"<p>{html}</p>";
+    }
+
+    private class MensagemVm
+    {
+        public string Papel { get; set; } = "";
+        public string Conteudo { get; set; } = "";
+        public List<FonteDto>? Fontes { get; set; }
+    }
+}

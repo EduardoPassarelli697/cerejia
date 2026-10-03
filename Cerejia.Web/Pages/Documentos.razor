@@ -1,0 +1,304 @@
+@page "/documentos"
+@using Cerejia.Web.Services
+@using Microsoft.AspNetCore.Components.Forms
+@implements IDisposable
+@inject ApiService Api
+@inject AuthStateService Auth
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+<div class="app-layout">
+    <div class="sidebar">
+        <div class="sidebar-logo">
+            <div class="logo-icon">C</div>
+            <div class="logo-texto">CEREJ<span>.IA</span></div>
+        </div>
+        <div style="padding:14px">
+            <button class="btn-nova-conversa" style="width:100%;justify-content:center" @onclick='() => Nav.NavigateTo("/")'>
+                ← Voltar ao chat
+            </button>
+        </div>
+    </div>
+
+    @if (!Auth.AdminDesbloqueado)
+    {
+
+        <div class="docs-page" style="display:flex;align-items:center;justify-content:center">
+            <div class="login-card" style="max-width:380px">
+                <div class="login-logo">
+                    <div class="logo-icon" style="width:56px;height:56px;font-size:26px;margin:0 auto 12px;background:#7c6ff7;border-radius:14px;display:flex;align-items:center;justify-content:center;color:white;">🔒</div>
+                    <h1 style="font-size:20px">Área restrita</h1>
+                    <p>Só líderes com a senha do admin acessam o envio de documentos.</p>
+                </div>
+
+                <div class="form-grupo">
+                    <label>Senha do admin</label>
+                    <input class="form-input" type="password" @bind="senhaAdmin" @bind:event="oninput" @onkeydown="TratarTecla"
+                           placeholder="••••••••" autofocus />
+                </div>
+
+                <button class="btn-primario" @onclick="Desbloquear" disabled="@verificando">
+                    @(verificando ? "Verificando..." : "Desbloquear")
+                </button>
+
+                @if (erroMsg != null)
+                {
+                    <div class="erro-msg">@erroMsg</div>
+                }
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="docs-page">
+            <div class="docs-header-flex" style="display:flex;justify-content:space-between;align-items:flex-start">
+                <div>
+                    <div class="docs-titulo">📄 Base de Conhecimento</div>
+                    <div class="docs-subtitulo">
+                        Envie documentos PDF ou DOCX da sua empresa. O assistente usará esses documentos para responder as perguntas.
+                    </div>
+                </div>
+                <button class="btn-sidebar-footer" @onclick="Bloquear" title="Sair da área restrita">
+                    🔒 Bloquear
+                </button>
+            </div>
+
+            <div class="upload-area" style="cursor:default">
+                <div class="upload-icon">📂</div>
+                <div class="upload-texto">Selecione um arquivo para enviar</div>
+                <div class="upload-hint">Suporte: PDF, DOCX, TXT · Máximo 20 MB por arquivo</div>
+                <br />
+                <InputFile id="inputArquivo" OnChange="UploadArquivo"
+                           accept=".pdf,.docx,.txt"
+                           disabled="@enviando"
+                           style="color:var(--cor-texto);margin-top:8px;font-size:13px" />
+                @if (enviando)
+                {
+                    <div style="margin-top:16px;color:#7c6ff7;font-size:14px">
+                        ⏳ Enviando arquivo...
+                    </div>
+                }
+            </div>
+
+            @if (erroMsg != null)
+            {
+                <div class="erro-msg" style="margin-bottom:16px">@erroMsg</div>
+            }
+
+            @if (sucessoMsg != null)
+            {
+                <div style="background:rgba(34,197,94,0.1);border:1px solid rgba(34,197,94,0.3);border-radius:8px;padding:10px 14px;font-size:13px;color:#4ade80;margin-bottom:16px">
+                    ✅ @sucessoMsg
+                </div>
+            }
+
+            <div class="docs-lista-titulo">Documentos indexados (@documentos.Count)</div>
+
+            @if (!documentos.Any())
+            {
+                <div style="color:#9898b8;font-size:14px;padding:20px 0">
+                    Nenhum documento indexado ainda. Envie o primeiro documento acima.
+                </div>
+            }
+
+            @foreach (var doc in documentos)
+            {
+                <div class="doc-card">
+                    <div class="doc-icon">@IconePorTipo(doc.TipoArquivo)</div>
+                    <div class="doc-info">
+                        <div class="doc-nome">@doc.NomeArquivo</div>
+                        <div class="doc-meta">
+                            <span>@doc.TipoArquivo.ToUpper()</span>
+                            @if (doc.TamanhoKb.HasValue)
+                            {
+                                <span>@doc.TamanhoKb KB</span>
+                            }
+                            <span>@doc.CriadoEm.ToLocalTime().ToString("dd/MM/yyyy HH:mm")</span>
+                        </div>
+                    </div>
+                    <span class="badge-status badge-@doc.Status">@doc.Status</span>
+                    @if (doc.Status == "processando")
+                    {
+                        <button class="btn-remover" disabled title="Aguarde o processamento terminar para remover" style="opacity:0.4;cursor:not-allowed">🗑</button>
+                    }
+                    else
+                    {
+                        <button class="btn-remover" @onclick="() => Remover(doc.Id)" title="Remover">🗑</button>
+                    }
+                </div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    private List<DocumentoVm> documentos = [];
+    private bool enviando = false;
+    private bool verificando = false;
+    private string senhaAdmin = "";
+    private string? erroMsg;
+    private string? sucessoMsg;
+    private System.Threading.Timer? pollingTimer;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!Auth.EstaAutenticado)
+        {
+            Nav.NavigateTo("/login");
+            return;
+        }
+
+        if (Auth.AdminDesbloqueado)
+            await Carregar();
+    }
+
+    private async Task Desbloquear()
+    {
+        erroMsg = null;
+        if (string.IsNullOrEmpty(senhaAdmin))
+        {
+            erroMsg = "Digite a senha do admin.";
+            return;
+        }
+
+        verificando = true;
+        try
+        {
+            var (ok, erro) = await Api.VerificarAdminAsync(senhaAdmin);
+            senhaAdmin = "";
+            if (ok)
+                await Carregar();
+            else
+                erroMsg = erro ?? "Senha incorreta.";
+        }
+        catch { erroMsg = "Erro de conexão."; }
+        finally { verificando = false; }
+    }
+
+    private async Task Bloquear()
+    {
+        PararPolling();
+        await Api.LimparAdminAsync();
+        documentos = [];
+        erroMsg = null;
+        sucessoMsg = null;
+    }
+
+    private async Task TratarTecla(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            await Desbloquear();
+    }
+
+    private async Task Carregar()
+    {
+        var lista = await Api.ListarDocumentosAsync() ?? [];
+        documentos = lista.Select(d => new DocumentoVm
+        {
+            Id = d.Id,
+            NomeArquivo = d.NomeArquivo,
+            TipoArquivo = d.TipoArquivo,
+            Status = d.Status,
+            TamanhoKb = d.TamanhoKb,
+            CriadoEm = d.CriadoEm
+        }).ToList();
+
+        if (documentos.Any(d => d.Status == "processando"))
+            IniciarPolling();
+        else
+            PararPolling();
+    }
+
+    private void IniciarPolling()
+    {
+        if (pollingTimer != null) return;
+        pollingTimer = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await Carregar();
+                StateHasChanged();
+            });
+        }, null, dueTime: 3000, period: 3000);
+    }
+
+    private void PararPolling()
+    {
+        pollingTimer?.Dispose();
+        pollingTimer = null;
+    }
+
+    public void Dispose()
+    {
+        PararPolling();
+
+        Auth.BloquearAdmin();
+    }
+
+    private async Task UploadArquivo(InputFileChangeEventArgs e)
+    {
+
+        if (enviando) return;
+
+        erroMsg = null;
+        sucessoMsg = null;
+
+        var arquivo = e.File;
+
+        if (arquivo.Size > 20 * 1024 * 1024)
+        {
+            erroMsg = "Arquivo muito grande. Máximo permitido: 20 MB.";
+            return;
+        }
+
+        enviando = true;
+        StateHasChanged();
+
+        try
+        {
+            var resultado = await Api.UploadDocumentoAsync(arquivo);
+            if (resultado.Sucesso)
+            {
+                sucessoMsg = $"'{arquivo.Name}' enviado! Indexando em segundo plano...";
+                await Carregar();
+            }
+            else
+            {
+                erroMsg = resultado.Erro ?? "Erro ao enviar o documento.";
+            }
+        }
+        catch (Exception ex)
+        {
+            erroMsg = $"Erro: {ex.Message}";
+        }
+        finally
+        {
+            enviando = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task Remover(Guid id)
+    {
+        var ok = await Api.RemoverDocumentoAsync(id);
+        if (ok) await Carregar();
+    }
+
+    private static string IconePorTipo(string tipo) => tipo.ToLower() switch
+    {
+        "pdf"  => "📕",
+        "docx" => "📘",
+        "txt"  => "📝",
+        _      => "📄"
+    };
+
+    private class DocumentoVm
+    {
+        public Guid Id { get; set; }
+        public string NomeArquivo { get; set; } = "";
+        public string TipoArquivo { get; set; } = "";
+        public string Status { get; set; } = "";
+        public int? TamanhoKb { get; set; }
+        public DateTime CriadoEm { get; set; }
+    }
+}

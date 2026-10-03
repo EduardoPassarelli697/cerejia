@@ -1,0 +1,194 @@
+@page "/colaboradores"
+@using Cerejia.Web.Services
+@implements IDisposable
+@inject ApiService Api
+@inject AuthStateService Auth
+@inject NavigationManager Nav
+
+<div class="app-layout">
+    <div class="sidebar">
+        <div class="sidebar-logo">
+            <div class="logo-icon">C</div>
+            <div class="logo-texto">CEREJ<span>.IA</span></div>
+        </div>
+        <div style="padding:14px">
+            <button class="btn-nova-conversa" style="width:100%;justify-content:center" @onclick='() => Nav.NavigateTo("/")'>
+                ← Voltar ao chat
+            </button>
+        </div>
+    </div>
+
+    @if (!Auth.ColaboradoresDesbloqueado)
+    {
+        <div class="docs-page" style="display:flex;align-items:center;justify-content:center">
+            <div class="login-card" style="max-width:380px">
+                <div class="login-logo">
+                    <div class="logo-icon" style="width:56px;height:56px;font-size:26px;margin:0 auto 12px;background:#7c6ff7;border-radius:14px;display:flex;align-items:center;justify-content:center;color:white;">🔒</div>
+                    <h1 style="font-size:20px">Área restrita</h1>
+                    <p>Só supervisores, com a senha do admin, acessam aqui.</p>
+                </div>
+
+                <div class="form-grupo">
+                    <label>Senha do admin</label>
+                    <input class="form-input" type="password" @bind="senhaAdmin" @bind:event="oninput" @onkeydown="TratarTecla"
+                           placeholder="••••••••" autofocus />
+                </div>
+
+                <button class="btn-primario" @onclick="Desbloquear" disabled="@verificando">
+                    @(verificando ? "Verificando..." : "Desbloquear")
+                </button>
+
+                @if (erroMsg != null)
+                {
+                    <div class="erro-msg">@erroMsg</div>
+                }
+            </div>
+        </div>
+    }
+    else
+    {
+        <div class="docs-page">
+            <div style="display:flex;justify-content:space-between;align-items:flex-start">
+                <div>
+                    <div class="docs-titulo">👥 Administrar colaboradores</div>
+                    <div class="docs-subtitulo">Colaboradores cadastrados nesta empresa.</div>
+                </div>
+                <button class="btn-sidebar-footer" @onclick="Bloquear" title="Sair da área restrita">
+                    🔒 Bloquear
+                </button>
+            </div>
+
+            <div class="form-grupo" style="margin:20px 0">
+                <input class="form-input" @bind="busca" @bind:event="oninput" @onkeyup="Buscar"
+                       placeholder="🔍 Buscar por e-mail ou CPF..." />
+            </div>
+
+            @if (carregando)
+            {
+                <div style="color:#9898b8;font-size:14px;padding:20px 0">Carregando...</div>
+            }
+            else if (!colaboradores.Any())
+            {
+                <div style="color:#9898b8;font-size:14px;padding:20px 0">
+                    Nenhum colaborador encontrado.
+                </div>
+            }
+            else
+            {
+                <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px">
+                    @foreach (var c in colaboradores)
+                    {
+                        <div class="doc-card" style="flex-direction:column;align-items:flex-start;gap:6px">
+                            <div style="display:flex;justify-content:space-between;width:100%;align-items:center">
+                                <div class="doc-nome" style="font-size:15px">@(!string.IsNullOrWhiteSpace(c.Nome) ? c.Nome : c.EmailCorporativo)</div>
+                                @if (c.Supervisor)
+                                {
+                                    <span class="badge-status badge-indexado" title="Supervisor">⭐ Supervisor</span>
+                                }
+                            </div>
+                            <div class="doc-meta">
+                                <span>@c.EmailCorporativo</span>
+                            </div>
+                            <div class="doc-meta">
+                                <span>CPF: @FormatarCpf(c.Cpf)</span>
+                            </div>
+                            <div class="doc-meta">
+                                <span>Desde @c.CriadoEm.ToLocalTime().ToString("dd/MM/yyyy")</span>
+                            </div>
+                        </div>
+                    }
+                </div>
+            }
+        </div>
+    }
+</div>
+
+@code {
+    private string senhaAdmin = "";
+    private bool verificando = false;
+    private bool carregando = false;
+    private string? erroMsg;
+    private string busca = "";
+    private List<FuncionarioDto> colaboradores = [];
+    private System.Threading.Timer? debounce;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (!Auth.EstaAutenticado)
+        {
+            Nav.NavigateTo("/login");
+            return;
+        }
+
+        if (Auth.ColaboradoresDesbloqueado)
+            await Carregar();
+    }
+
+    private async Task Desbloquear()
+    {
+        erroMsg = null;
+        if (string.IsNullOrEmpty(senhaAdmin))
+        {
+            erroMsg = "Digite a senha do admin.";
+            return;
+        }
+
+        verificando = true;
+        try
+        {
+            var (ok, erro) = await Api.VerificarColaboradoresAsync(senhaAdmin);
+            senhaAdmin = "";
+            if (ok)
+                await Carregar();
+            else
+                erroMsg = erro ?? "Não foi possível liberar o acesso.";
+        }
+        catch { erroMsg = "Erro de conexão."; }
+        finally { verificando = false; }
+    }
+
+    private async Task Bloquear()
+    {
+        await Api.LimparColaboradoresAsync();
+        colaboradores = [];
+        busca = "";
+        erroMsg = null;
+    }
+
+    private async Task TratarTecla(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            await Desbloquear();
+    }
+
+    private async Task Carregar()
+    {
+        carregando = true;
+        colaboradores = await Api.ListarColaboradoresAsync(busca) ?? [];
+        carregando = false;
+    }
+
+    private void Buscar(KeyboardEventArgs e)
+    {
+
+        debounce?.Dispose();
+        debounce = new System.Threading.Timer(async _ =>
+        {
+            await InvokeAsync(async () =>
+            {
+                await Carregar();
+                StateHasChanged();
+            });
+        }, null, dueTime: 350, period: System.Threading.Timeout.Infinite);
+    }
+
+    public void Dispose()
+    {
+        debounce?.Dispose();
+
+        Auth.BloquearColaboradores();
+    }
+
+    private static string FormatarCpf(string cpf) =>
+        cpf.Length == 11 ? $"{cpf[..3]}.{cpf[3..6]}.{cpf[6..9]}-{cpf[9..]}" : cpf;
+}

@@ -1,0 +1,429 @@
+@page "/login"
+@using Cerejia.Web.Services
+@implements IDisposable
+@inject ApiService Api
+@inject AuthStateService Auth
+@inject NavigationManager Nav
+@inject IJSRuntime JS
+
+<div class="login-page">
+    <div class="login-card" style="max-width:@(etapa == EtapaCadastro.Funcionarios ? "520px" : "400px");position:relative">
+        @if (modo == Modo.Cadastrar)
+        {
+            <button class="voltar-topo" @onclick="Voltar" title="Voltar" aria-label="Voltar"
+                    style="position:absolute;top:24px;left:24px;background:none;border:none;color:#9898b8;font-size:20px;cursor:pointer;padding:4px 8px;line-height:1;">
+                ←
+            </button>
+        }
+        <div class="login-logo">
+            <div class="logo-icon" style="width:56px;height:56px;font-size:28px;margin:0 auto 12px;background:#7c6ff7;border-radius:14px;display:flex;align-items:center;justify-content:center;color:white;font-weight:bold;">C</div>
+            <h1>CEREJ<span style="color:#7c6ff7">.IA</span></h1>
+            <p>@TituloEtapa()</p>
+        </div>
+
+        @if (modo == Modo.Entrar)
+        {
+            <div class="form-grupo">
+                <label>CNPJ da empresa</label>
+                <input class="form-input" @bind="cnpjEntrar" placeholder="00.000.000/0000-00" maxlength="18" />
+            </div>
+            <div class="form-grupo">
+                <label>E-mail corporativo</label>
+                <input class="form-input" @bind="emailEntrar" placeholder="voce@empresa.com" />
+            </div>
+            <div class="form-grupo">
+                <label>Senha</label>
+                <input class="form-input" type="password" @bind="senhaEntrar" @bind:event="oninput" @onkeydown="TratarTecla" placeholder="••••••••" />
+            </div>
+
+            <button class="btn-primario" @onclick="Entrar" disabled="@carregando">
+                @(carregando ? "Entrando..." : "Entrar")
+            </button>
+
+            <div style="text-align:center;margin-top:16px;font-size:13px;color:#9898b8">
+                <button class="link-btn" @onclick="() => { modo = Modo.Cadastrar; erroMsg = null; }">
+                    Cadastrar nova empresa
+                </button>
+            </div>
+        }
+        else if (etapa == EtapaCadastro.DadosEmpresa)
+        {
+            <div class="form-grupo">
+                <label>Nome da empresa</label>
+                <input class="form-input" @bind="nomeEmpresa" placeholder="Nome da empresa" />
+            </div>
+            <div class="form-grupo">
+                <label>CNPJ</label>
+                <input class="form-input" value="@cnpjEmpresa" @oninput="OnCnpjChanged" placeholder="00.000.000/0000-00" maxlength="18" />
+                @if (validandoCnpj)
+                {
+                    <span style="font-size:12px;color:#9898b8">Verificando CNPJ...</span>
+                }
+                else if (cnpjAtivo == true)
+                {
+                    <span style="font-size:12px;color:#2ecc71">✅ CNPJ ativo@(!string.IsNullOrWhiteSpace(cnpjRazaoSocial) ? $" — {cnpjRazaoSocial}" : "")</span>
+                }
+                else if (cnpjAtivo == false)
+                {
+                    <span style="font-size:12px;color:#e74c3c">❌ @(cnpjMensagemStatus ?? "CNPJ inválido ou inativo.")</span>
+                }
+                else
+                {
+                    <span style="font-size:12px;color:#9898b8">Verificamos automaticamente se o CNPJ está ativo.</span>
+                }
+            </div>
+            <div class="form-grupo">
+                <label>Senha do admin</label>
+                <input class="form-input" type="password" @bind="senhaAdmin" placeholder="••••••••" />
+                <span style="font-size:12px;color:#9898b8">Mín. 8 caracteres, com 1 letra e 1 número. Libera Documentos e Administrar colaboradores.</span>
+            </div>
+
+            <button class="btn-primario" @onclick="AvancarParaQuantidade" disabled="@(carregando || cnpjAtivo != true)">
+                Continuar
+            </button>
+        }
+        else if (etapa == EtapaCadastro.Quantidade)
+        {
+            <div class="form-grupo">
+                <label>Quantos colaboradores deseja cadastrar?</label>
+                <input class="form-input" type="number" min="1" max="200" @bind="quantidadeFuncionarios" />
+                <span style="font-size:12px;color:#9898b8">Você vai preencher CPF, e-mail e senha de cada um na próxima etapa.</span>
+            </div>
+
+            <button class="btn-primario" @onclick="AvancarParaFuncionarios" disabled="@carregando">
+                Continuar
+            </button>
+        }
+        else if (etapa == EtapaCadastro.Funcionarios)
+        {
+            <div style="font-size:13px;color:#9898b8;margin-bottom:12px">
+                Colaborador @(indiceFuncionarioAtual + 1) de @funcionarios.Count
+            </div>
+
+            <div class="form-grupo">
+                <label>Nome</label>
+                <input class="form-input" @bind="funcionarios[indiceFuncionarioAtual].Nome" placeholder="Nome completo" />
+            </div>
+            <div class="form-grupo">
+                <label>CPF</label>
+                <input class="form-input" @bind="funcionarios[indiceFuncionarioAtual].Cpf" placeholder="000.000.000-00" maxlength="14" />
+            </div>
+            <div class="form-grupo">
+                <label>E-mail corporativo</label>
+                <input class="form-input" @bind="funcionarios[indiceFuncionarioAtual].EmailCorporativo" placeholder="nome@empresa.com" />
+            </div>
+            <div class="form-grupo">
+                <label>Senha</label>
+                <input class="form-input" type="password" @bind="funcionarios[indiceFuncionarioAtual].Senha" placeholder="••••••••" />
+                <span style="font-size:12px;color:#9898b8">Sem regra de complexidade.</span>
+            </div>
+            <div class="form-grupo">
+                <label>É supervisor?</label>
+                <div style="display:flex;gap:8px;margin-top:6px">
+                    <button class="btn-secundario" style="@(funcionarios[indiceFuncionarioAtual].Supervisor ? "background:#7c6ff7;color:white" : "")"
+                            @onclick="() => funcionarios[indiceFuncionarioAtual].Supervisor = true">
+                        Sim
+                    </button>
+                    <button class="btn-secundario" style="@(!funcionarios[indiceFuncionarioAtual].Supervisor ? "background:#7c6ff7;color:white" : "")"
+                            @onclick="() => funcionarios[indiceFuncionarioAtual].Supervisor = false">
+                        Não
+                    </button>
+                </div>
+                <span style="font-size:12px;color:#9898b8">Supervisores podem acessar "Administrar colaboradores" (com a senha do admin).</span>
+            </div>
+
+            <div style="display:flex;gap:8px;margin-top:8px">
+                @if (indiceFuncionarioAtual > 0)
+                {
+                    <button class="btn-secundario" style="flex:1" @onclick="VoltarFuncionario">← Voltar</button>
+                }
+                @if (indiceFuncionarioAtual < funcionarios.Count - 1)
+                {
+                    <button class="btn-primario" style="flex:1" @onclick="ProximoFuncionario">Próximo →</button>
+                }
+                else
+                {
+                    <button class="btn-primario" style="flex:1" @onclick="ConcluirCadastro" disabled="@carregando">
+                        @(carregando ? "Cadastrando..." : "Concluir cadastro")
+                    </button>
+                }
+            </div>
+        }
+
+        @if (erroMsg != null)
+        {
+            <div class="erro-msg" id="erro-cadastro">@erroMsg</div>
+        }
+    </div>
+</div>
+
+@code {
+    private enum Modo { Entrar, Cadastrar }
+    private enum EtapaCadastro { DadosEmpresa, Quantidade, Funcionarios }
+
+    private Modo modo = Modo.Entrar;
+    private EtapaCadastro etapa = EtapaCadastro.DadosEmpresa;
+
+    private bool carregando = false;
+    private string? erroMsg;
+
+    private string cnpjEntrar = "";
+    private string emailEntrar = "";
+    private string senhaEntrar = "";
+
+    private string nomeEmpresa = "";
+    private string cnpjEmpresa = "";
+    private string senhaAdmin = "";
+    private int quantidadeFuncionarios = 1;
+
+    private bool validandoCnpj = false;
+    private bool? cnpjAtivo = null;
+    private string? cnpjRazaoSocial = null;
+    private string? cnpjMensagemStatus = null;
+    private string cnpjUltimoValidado = "";
+    private CancellationTokenSource? cnpjDebounceCts;
+    private const int CnpjDebounceMs = 600;
+
+    private List<FuncionarioForm> funcionarios = [];
+    private int indiceFuncionarioAtual = 0;
+
+    private class FuncionarioForm
+    {
+        public string Nome { get; set; } = "";
+        public string Cpf { get; set; } = "";
+        public string EmailCorporativo { get; set; } = "";
+        public string Senha { get; set; } = "";
+        public bool Supervisor { get; set; } = false;
+    }
+
+    protected override void OnInitialized()
+    {
+        if (Auth.EstaAutenticado)
+            Nav.NavigateTo("/");
+    }
+
+    private async Task MostrarErroAsync(string msg)
+    {
+        erroMsg = msg;
+        StateHasChanged();
+        await Task.Delay(50);
+        try
+        {
+            await JS.InvokeVoidAsync("eval",
+                "document.getElementById('erro-cadastro')?.scrollIntoView({behavior:'smooth', block:'center'})");
+        }
+        catch {  }
+    }
+
+    private void OnCnpjChanged(ChangeEventArgs e)
+    {
+        cnpjEmpresa = e.Value?.ToString() ?? "";
+        cnpjAtivo = null;
+        cnpjRazaoSocial = null;
+        cnpjMensagemStatus = null;
+
+        cnpjDebounceCts?.Cancel();
+        cnpjDebounceCts = new CancellationTokenSource();
+        _ = DebounceValidarCnpjAsync(cnpjDebounceCts.Token);
+    }
+
+    private async Task DebounceValidarCnpjAsync(CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(CnpjDebounceMs, token);
+        }
+        catch (TaskCanceledException)
+        {
+            return;
+        }
+
+        if (token.IsCancellationRequested)
+            return;
+
+        await ValidarCnpjAsync(token);
+    }
+
+    private async Task ValidarCnpjAsync(CancellationToken token)
+    {
+        var cnpjLimpo = new string(cnpjEmpresa.Where(char.IsDigit).ToArray());
+
+        if (cnpjLimpo.Length != 14)
+        {
+            cnpjAtivo = null;
+            return;
+        }
+
+        if (cnpjLimpo == cnpjUltimoValidado && cnpjAtivo.HasValue)
+            return;
+
+        validandoCnpj = true;
+        StateHasChanged();
+
+        try
+        {
+            var resultado = await Api.ValidarCnpjAsync(cnpjLimpo, token);
+            if (token.IsCancellationRequested) return;
+
+            cnpjAtivo = resultado.Valido && resultado.Ativo;
+            cnpjRazaoSocial = resultado.RazaoSocial;
+            cnpjMensagemStatus = resultado.Erro;
+            cnpjUltimoValidado = cnpjLimpo;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            validandoCnpj = false;
+            StateHasChanged();
+        }
+    }
+
+    public void Dispose()
+    {
+        cnpjDebounceCts?.Cancel();
+        cnpjDebounceCts?.Dispose();
+    }
+
+    private void Voltar()
+    {
+        erroMsg = null;
+        if (etapa == EtapaCadastro.Funcionarios)
+            etapa = EtapaCadastro.Quantidade;
+        else if (etapa == EtapaCadastro.Quantidade)
+            etapa = EtapaCadastro.DadosEmpresa;
+        else
+            modo = Modo.Entrar;
+    }
+
+    private string TituloEtapa() => modo switch
+    {
+        Modo.Entrar => "Acesso da empresa",
+        _ when etapa == EtapaCadastro.DadosEmpresa => "Cadastrar nova empresa",
+        _ when etapa == EtapaCadastro.Quantidade => "Quantos colaboradores?",
+        _ => "Cadastrar colaboradores"
+    };
+
+    private async Task Entrar()
+    {
+        erroMsg = null;
+        if (string.IsNullOrWhiteSpace(cnpjEntrar) || string.IsNullOrWhiteSpace(emailEntrar) || string.IsNullOrWhiteSpace(senhaEntrar))
+        {
+            await MostrarErroAsync("Preencha CNPJ, e-mail corporativo e senha.");
+            return;
+        }
+
+        carregando = true;
+        try
+        {
+            var (ok, erro) = await Api.EntrarAsync(cnpjEntrar, emailEntrar, senhaEntrar);
+            if (ok) Nav.NavigateTo("/");
+            else await MostrarErroAsync(erro ?? "Não foi possível entrar.");
+        }
+        catch { await MostrarErroAsync("Erro de conexão. Verifique se a API está rodando."); }
+        finally { carregando = false; }
+    }
+
+    private async Task AvancarParaQuantidade()
+    {
+        erroMsg = null;
+
+        if (string.IsNullOrWhiteSpace(nomeEmpresa) || string.IsNullOrWhiteSpace(cnpjEmpresa))
+        {
+            await MostrarErroAsync("Preencha o nome da empresa e o CNPJ.");
+            return;
+        }
+        if (cnpjAtivo != true)
+        {
+            await MostrarErroAsync(cnpjMensagemStatus ?? "Aguarde a verificação do CNPJ (ou corrija-o) antes de continuar.");
+            return;
+        }
+        if (senhaAdmin.Length < 8 || !senhaAdmin.Any(char.IsLetter) || !senhaAdmin.Any(char.IsDigit))
+        {
+            await MostrarErroAsync("A senha do admin precisa ter pelo menos 8 caracteres, com letra e número.");
+            return;
+        }
+
+        etapa = EtapaCadastro.Quantidade;
+    }
+
+    private async Task AvancarParaFuncionarios()
+    {
+        erroMsg = null;
+
+        if (quantidadeFuncionarios < 1 || quantidadeFuncionarios > 200)
+        {
+            await MostrarErroAsync("Informe uma quantidade de colaboradores entre 1 e 200.");
+            return;
+        }
+
+        funcionarios = Enumerable.Range(0, quantidadeFuncionarios)
+            .Select(_ => new FuncionarioForm())
+            .ToList();
+        indiceFuncionarioAtual = 0;
+        etapa = EtapaCadastro.Funcionarios;
+    }
+
+    private async Task ProximoFuncionario()
+    {
+        erroMsg = null;
+        var atual = funcionarios[indiceFuncionarioAtual];
+        if (string.IsNullOrWhiteSpace(atual.Nome) || string.IsNullOrWhiteSpace(atual.Cpf) || string.IsNullOrWhiteSpace(atual.EmailCorporativo) || string.IsNullOrWhiteSpace(atual.Senha))
+        {
+            await MostrarErroAsync("Preencha nome, CPF, e-mail corporativo e senha desse colaborador antes de continuar.");
+            return;
+        }
+        if (!CpfValido(atual.Cpf))
+        {
+            await MostrarErroAsync($"CPF inválido para o colaborador {indiceFuncionarioAtual + 1}. Confira os números digitados.");
+            return;
+        }
+        indiceFuncionarioAtual++;
+    }
+
+    private void VoltarFuncionario()
+    {
+        erroMsg = null;
+        indiceFuncionarioAtual--;
+    }
+
+    private async Task ConcluirCadastro()
+    {
+        erroMsg = null;
+        var atual = funcionarios[indiceFuncionarioAtual];
+        if (string.IsNullOrWhiteSpace(atual.Nome) || string.IsNullOrWhiteSpace(atual.Cpf) || string.IsNullOrWhiteSpace(atual.EmailCorporativo) || string.IsNullOrWhiteSpace(atual.Senha))
+        {
+            await MostrarErroAsync("Preencha nome, CPF, e-mail corporativo e senha desse colaborador.");
+            return;
+        }
+        if (!CpfValido(atual.Cpf))
+        {
+            await MostrarErroAsync($"CPF inválido para o colaborador {indiceFuncionarioAtual + 1}. Confira os números digitados.");
+            return;
+        }
+
+        carregando = true;
+        try
+        {
+            var lista = funcionarios.Select(f => new FuncionarioNovo(f.Nome, f.Cpf, f.EmailCorporativo, f.Senha, f.Supervisor)).ToList();
+            var (ok, erro) = await Api.CadastrarEmpresaAsync(nomeEmpresa, cnpjEmpresa, senhaAdmin, lista);
+            if (ok) Nav.NavigateTo("/");
+            else await MostrarErroAsync(erro ?? "Erro ao cadastrar a empresa.");
+        }
+        catch { await MostrarErroAsync("Erro de conexão."); }
+        finally { carregando = false; }
+    }
+
+    private static bool CpfValido(string cpfBruto)
+    {
+        var cpf = new string(cpfBruto.Where(char.IsDigit).ToArray());
+        return cpf.Length == 11;
+    }
+
+    private async Task TratarTecla(KeyboardEventArgs e)
+    {
+        if (e.Key == "Enter")
+            await Entrar();
+    }
+}
