@@ -1,0 +1,22 @@
+﻿# Build
+bin/
+obj/
+**/bin/
+**/obj/
+
+# Visual Studio / Rider
+.vs/
+*.user
+*.suo
+
+# Publicação
+publish/
+
+# Segredos - nunca versionar
+appsettings.Development.json
+appsettings.Production.json
+**/appsettings.Development.json
+**/appsettings.Production.json
+
+# Blazor WASM
+wwwroot/_framework/
